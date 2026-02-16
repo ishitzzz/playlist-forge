@@ -1,4 +1,5 @@
-import yts from "yt-search";
+// Removed top-level import to prevent runtime crash
+// import yts from "yt-search";
 
 export interface VideoResult {
     videoId: string;
@@ -84,10 +85,12 @@ export async function searchVideoForModule(
     // 1. Try Scraper (Primary)
     try {
         console.log(`Searching (Primary): ${augmentedQuery}`);
+        // Dynamic import to handle Vercel bundling issues
+        const { default: yts } = await import("yt-search");
         const r = await yts(augmentedQuery);
         videos = r.videos.slice(0, 10) as unknown as RawVideoItem[];
     } catch (error) {
-        console.warn("Primary search failed (likely blocked). Attempting fallback...", error);
+        console.warn("Primary search failed (likely blocked or module missing). Attempting fallback...", error);
         // 2. Try API (Fallback)
         videos = await searchYouTubeAPI(augmentedQuery);
     }
@@ -169,6 +172,7 @@ export async function searchVideoReplacement(
 
     // 1. Try Scraper (Primary)
     try {
+        const { default: yts } = await import("yt-search");
         const r = await yts(augmentedQuery);
         videos = r.videos.slice(0, 15) as unknown as RawVideoItem[];
     } catch (error) {
