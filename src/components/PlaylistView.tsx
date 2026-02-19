@@ -149,22 +149,30 @@ export const PlaylistView = ({ entries, playlistUrl, onBack }: PlaylistViewProps
 
                         {/* Actions */}
                         <div className={clsx("flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity md:translate-x-0", replacingId === video.videoId && "opacity-0")}>
-                            <button
-                                onClick={() => handleReplace(video.videoId, video.query, video.level)}
-                                className="p-2 hover:bg-white/5 rounded-full transition-colors group/btn"
-                                title="Replace Video"
-                            >
-                                <RefreshCw className="w-4 h-4 opacity-40 group-hover/btn:opacity-100 group-hover/btn:text-accent transition-all" />
-                            </button>
-                            <a
-                                href={`https://youtube.com/watch?v=${video.videoId}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="p-2 hover:bg-white/5 rounded-full transition-colors group/link"
-                                title="Open in YouTube"
-                            >
-                                <ExternalLink className="w-4 h-4 opacity-40 group-hover/link:opacity-100 transition-all" />
-                            </a>
+                            {video.videoId ? (
+                                <>
+                                    <button
+                                        onClick={() => handleReplace(video.videoId, video.query, video.level)}
+                                        className="p-2 hover:bg-white/5 rounded-full transition-colors group/btn"
+                                        title="Replace Video"
+                                    >
+                                        <RefreshCw className="w-4 h-4 opacity-40 group-hover/btn:opacity-100 group-hover/btn:text-accent transition-all" />
+                                    </button>
+                                    <a
+                                        href={`https://youtube.com/watch?v=${video.videoId}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="p-2 hover:bg-white/5 rounded-full transition-colors group/link"
+                                        title="Open in YouTube"
+                                    >
+                                        <ExternalLink className="w-4 h-4 opacity-40 group-hover/link:opacity-100 transition-all" />
+                                    </a>
+                                </>
+                            ) : (
+                                <span className="text-[10px] uppercase tracking-widest opacity-30 font-mono">
+                                    Unavailable
+                                </span>
+                            )}
                         </div>
                     </motion.div>
                 ))}
