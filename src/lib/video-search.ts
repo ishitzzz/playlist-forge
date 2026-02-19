@@ -33,17 +33,27 @@ async function searchYouTubeAPI(query: string): Promise<RawVideoItem[]> {
         return [];
     }
 
+    // Mask API Key for logs
+    const maskedKey = apiKey.substring(0, 4) + "...";
+    console.log(`Fallback: Using API Key starting with ${maskedKey}`);
+
     try {
         const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encodeURIComponent(query)}&type=video&key=${apiKey}`;
         const response = await fetch(url);
 
         if (!response.ok) {
-            console.error(`YouTube API Error: ${response.status} ${response.statusText}`);
+            const errorText = await response.text();
+            console.error(`YouTube API Error: ${response.status} ${response.statusText}`, errorText);
             return [];
         }
 
         const data = await response.json();
-        if (!data.items) return [];
+        if (!data.items) {
+            console.warn("YouTube API returned no items.");
+            return [];
+        }
+
+        console.log(`Fallback: Found ${data.items.length} videos.`);
 
         // Map API response to RawVideoItem format
         return data.items.map((item: any) => ({
