@@ -127,22 +127,23 @@ export async function searchVideoForModule(
 
     let videos: RawVideoItem[] = [];
 
-    // STEP 1: Try Official API (Rotation) -> PRIMARY
-    videos = await searchYouTubeAPIWithRotation(augmentedQuery);
-
-    // STEP 2: Scraper Fallback (Only if API completely fails/returns 0)
-    if (videos.length === 0) {
-        console.warn("API returned 0 videos. Attempting 'yt-search' scraper as last resort...");
-        try {
-            const { default: yts } = await import("yt-search");
-            const r = await yts(augmentedQuery);
-            if (r && r.videos) {
-                videos = r.videos.slice(0, 10) as unknown as RawVideoItem[];
-                console.log(`Scraper saved the day! Found ${videos.length} videos.`);
-            }
-        } catch (error) {
-            console.warn("Scraper also failed. Giving up.", error);
+    // STEP 1: Try yt-search Scraper (Primary)
+    try {
+        console.log(`Searching (Primary - Scraper): ${augmentedQuery}`);
+        const { default: yts } = await import("yt-search");
+        const r = await yts(augmentedQuery);
+        if (r && r.videos && r.videos.length > 0) {
+            videos = r.videos.slice(0, 10) as unknown as RawVideoItem[];
+            console.log(`Scraper success! Found ${videos.length} videos.`);
         }
+    } catch (error) {
+        console.warn("Primary scraper search failed (likely blocked or module missing).", error);
+    }
+
+    // STEP 2: Official API Fallback (Rotation) if scraper fails or finds nothing
+    if (videos.length === 0) {
+        console.warn("Attempting YouTube API fallback...");
+        videos = await searchYouTubeAPIWithRotation(augmentedQuery);
     }
 
     // Filter and Rank
@@ -180,20 +181,20 @@ export async function searchVideoReplacement(
 
     let videos: RawVideoItem[] = [];
 
-    // STEP 1: Official API
-    videos = await searchYouTubeAPIWithRotation(augmentedQuery);
-
-    // STEP 2: Scraper Fallback
-    if (videos.length === 0) {
-        try {
-            const { default: yts } = await import("yt-search");
-            const r = await yts(augmentedQuery);
-            if (r && r.videos) {
-                videos = r.videos.slice(0, 15) as unknown as RawVideoItem[];
-            }
-        } catch (error) {
-            console.warn("Scraper replacement search failed.");
+    // STEP 1: Try yt-search Scraper (Primary)
+    try {
+        const { default: yts } = await import("yt-search");
+        const r = await yts(augmentedQuery);
+        if (r && r.videos && r.videos.length > 0) {
+            videos = r.videos.slice(0, 15) as unknown as RawVideoItem[];
         }
+    } catch (error) {
+        console.warn("Primary scraper replacement search failed.", error);
+    }
+
+    // STEP 2: Official API Fallback (Rotation)
+    if (videos.length === 0) {
+        videos = await searchYouTubeAPIWithRotation(augmentedQuery);
     }
 
     // Filter & Rank (Excluding current video)
