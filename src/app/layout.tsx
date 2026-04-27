@@ -23,6 +23,9 @@ export default function RootLayout({
 }>) {
     return (
         <html lang="en">
+            <head>
+                <script defer src="https://cloud.umami.is/script.js" data-website-id="4f0c5b35-969e-4806-8df5-5f3aa4892c00"></script>
+            </head>
             <body
                 className={clsx(
                     instrumentSerif.variable,
