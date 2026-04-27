@@ -25,11 +25,11 @@ interface PlaylistViewProps {
 
 export const PlaylistView = ({ entries, playlistUrl, onBack }: PlaylistViewProps) => {
     const [currentEntries, setCurrentEntries] = useState(entries);
-    const [replacingId, setReplacingId] = useState<string | null>(null);
+    const [replacingPosition, setReplacingPosition] = useState<number | null>(null);
 
-    const handleReplace = async (videoId: string, query?: string, level?: string) => {
+    const handleReplace = async (position: number, videoId: string, query?: string, level?: string) => {
         if (!query) return; /* ... same logic ... */
-        setReplacingId(videoId);
+        setReplacingPosition(position);
 
         try {
             const response = await fetch("/api/replace", {
@@ -49,7 +49,7 @@ export const PlaylistView = ({ entries, playlistUrl, onBack }: PlaylistViewProps
             const newVideo = data.video;
 
             setCurrentEntries((prev) => prev.map((entry) => {
-                if (entry.videoId === videoId) {
+                if (entry.position === position) {
                     return {
                         ...entry,
                         videoId: newVideo.videoId,
@@ -68,7 +68,7 @@ export const PlaylistView = ({ entries, playlistUrl, onBack }: PlaylistViewProps
             console.error("Failed to replace video:", err);
             alert("Could not find a better alternative right now.");
         } finally {
-            setReplacingId(null);
+            setReplacingPosition(null);
         }
     };
 
@@ -113,7 +113,7 @@ export const PlaylistView = ({ entries, playlistUrl, onBack }: PlaylistViewProps
                         transition={{ delay: index * 0.05 }}
                         className={clsx(
                             "relative bg-[#0A0A0A] p-6 hover:bg-white/[0.02] transition-colors group grid md:grid-cols-[auto_1fr_auto] gap-6 items-center",
-                            replacingId === video.videoId && "pointer-events-none"
+                            replacingPosition === video.position && "pointer-events-none"
                         )}
                     >
                         {/* Index */}
@@ -122,7 +122,7 @@ export const PlaylistView = ({ entries, playlistUrl, onBack }: PlaylistViewProps
                         </div>
 
                         {/* Content */}
-                        <div className={clsx("space-y-1 transition-all duration-500", replacingId === video.videoId && "blur-sm opacity-50")}>
+                        <div className={clsx("space-y-1 transition-all duration-500", replacingPosition === video.position && "blur-sm opacity-50")}>
                             <h3 className="font-serif text-xl leading-tight text-foreground/90 group-hover:text-accent transition-colors cursor-pointer">
                                 {video.title}
                             </h3>
@@ -133,7 +133,7 @@ export const PlaylistView = ({ entries, playlistUrl, onBack }: PlaylistViewProps
 
                         {/* Replace Message Overlay */}
                         <AnimatePresence>
-                            {replacingId === video.videoId && (
+                            {replacingPosition === video.position && (
                                 <motion.div
                                     initial={{ opacity: 0 }}
                                     animate={{ opacity: 1 }}
@@ -148,11 +148,11 @@ export const PlaylistView = ({ entries, playlistUrl, onBack }: PlaylistViewProps
                         </AnimatePresence>
 
                         {/* Actions */}
-                        <div className={clsx("flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity md:translate-x-0", replacingId === video.videoId && "opacity-0")}>
+                        <div className={clsx("flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity md:translate-x-0", replacingPosition === video.position && "opacity-0")}>
                             {video.videoId ? (
                                 <>
                                     <button
-                                        onClick={() => handleReplace(video.videoId, video.query, video.level)}
+                                        onClick={() => handleReplace(video.position, video.videoId, video.query, video.level)}
                                         className="p-2 hover:bg-white/5 rounded-full transition-colors group/btn"
                                         title="Replace Video"
                                     >
