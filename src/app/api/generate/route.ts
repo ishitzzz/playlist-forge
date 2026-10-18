@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateCurriculum, SyllabusModule } from "@/lib/gemini";
-import { searchVideoForModule, VideoResult } from "@/lib/video-search";
+import { searchVideoForModule, searchCandidates, VideoResult } from "@/lib/video-search";
 
 export async function POST(req: NextRequest) {
     try {
@@ -29,16 +29,20 @@ export async function POST(req: NextRequest) {
         // For now, we'll `Promise.all` but limit concurrency if needed.
 
         // Let's attach results to modules
-        const playlistPromises = modules.map(async (mod, index) => {
-            const video = await searchVideoForModule(mod.query, mod.duration, mod.type, level);
-            return {
-                ...mod,
-                video,
-                position: index + 1 // Add 1-based index
-            };
-        });
-
-        const playlist = await Promise.all(playlistPromises);
+        // Search in parallel, then assign videos in order so no video repeats across modules.
+        const candidateLists = await Promise.all(
+            modules.map((mod) => searchCandidates(mod.query, `${mod.title} ${mod.query}`, mod.duration, level, new Set(), language))
+        );
+        const used = new Set<string>();
+        const playlist = await Promise.all(modules.map(async (mod, index) => {
+            let video: VideoResult | null = candidateLists[index].find((c) => !used.has(c.videoId)) || null;
+            if (!video) {
+                // every candidate was already used: search again excluding used ids
+                video = await searchVideoForModule(mod.query, mod.duration, mod.type, level, new Set(used), language, `${mod.title} ${mod.query}`);
+            }
+            if (video) used.add(video.videoId);
+            return { ...mod, video, position: index + 1 };
+        }));
 
         return NextResponse.json({ playlist });
 

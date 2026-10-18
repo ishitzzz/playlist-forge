@@ -62,7 +62,7 @@ async function searchYouTubeAPIWithRotation(query: string): Promise<RawVideoItem
                     return [];
                 }
                 console.log(`Key #${i + 1} success! Found ${data.items.length} videos.`);
-                return mapApiToRaw(data.items);
+                return await enrichWithDurations(mapApiToRaw(data.items), apiKey);
             }
 
             // Handle Errors
@@ -90,6 +90,39 @@ async function searchYouTubeAPIWithRotation(query: string): Promise<RawVideoItem
     return [];
 }
 
+function isoToSeconds(iso: string): number {
+    const m = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(iso || "");
+    if (!m) return 0;
+    return (+(m[1] || 0)) * 3600 + (+(m[2] || 0)) * 60 + (+(m[3] || 0));
+}
+
+function secondsToTimestamp(sec: number): string {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
+    return (h > 0 ? h + ":" : "") + mm + ":" + String(s).padStart(2, "0");
+}
+
+// The search endpoint has no duration. videos.list costs 1 quota unit per call for up to 50 ids.
+async function enrichWithDurations(items: RawVideoItem[], apiKey: string): Promise<RawVideoItem[]> {
+    try {
+        const ids = items.map((i) => i.videoId).join(",");
+        const r = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id=${ids}&key=${apiKey}`);
+        if (!r.ok) return items;
+        const data = await r.json();
+        const byId = new Map<string, any>((data.items || []).map((v: any) => [v.id, v]));
+        return items.map((it) => {
+            const v = byId.get(it.videoId);
+            if (!v) return it;
+            const seconds = isoToSeconds(v.contentDetails?.duration);
+            return { ...it, seconds, timestamp: seconds ? secondsToTimestamp(seconds) : it.timestamp, views: Number(v.statistics?.viewCount || 0) };
+        });
+    } catch {
+        return items;
+    }
+}
+
 function mapApiToRaw(items: any[]): RawVideoItem[] {
     return items.map((item: any) => ({
         videoId: item.id.videoId,
@@ -110,109 +143,121 @@ function mapApiToRaw(items: any[]): RawVideoItem[] {
 // 2. Main Search Functions
 // ---------------------------------------------------------------------------
 
+function augment(query: string, level: string): string {
+    if (level === "Undergrad" || level === "Post-Grad") return query + " lecture OR tutorial -shorts";
+    return query + " explained simply -shorts";
+}
+
+async function fetchRaw(augmentedQuery: string, limit: number): Promise<RawVideoItem[]> {
+    let videos: RawVideoItem[] = [];
+    // Primary: yt-search scraper
+    try {
+        const { default: yts } = await import("yt-search");
+        const r = await yts(augmentedQuery);
+        if (r && r.videos && r.videos.length > 0) videos = r.videos.slice(0, limit) as unknown as RawVideoItem[];
+    } catch (error) {
+        console.warn("Primary scraper search failed (likely blocked or module missing).", error);
+    }
+    // Fallback: official API with key rotation
+    if (videos.length === 0) videos = await searchYouTubeAPIWithRotation(augmentedQuery);
+    return videos;
+}
+
+// Free, keyless check: oEmbed returns 401/404 for private, removed or non-embeddable videos.
+async function isPlayable(videoId: string): Promise<boolean> {
+    try {
+        const r = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent("https://www.youtube.com/watch?v=" + videoId)}&format=json`, { signal: AbortSignal.timeout(4000) });
+        if (r.status === 404 || r.status === 401 || r.status === 403) return false;
+        return true; // on timeouts or other errors, do not discard
+    } catch {
+        return true;
+    }
+}
+
+const STOP = new Set(["the", "and", "for", "with", "of", "in", "to", "a", "an", "on", "lecture", "tutorial", "explained", "simply", "shorts", "or", "introduction", "basics", "full", "course"]);
+function tokens(str: string): string[] {
+    return (str.toLowerCase().match(/[a-z0-9+#]{2,}/g) || []).filter((t) => !STOP.has(t));
+}
+
+// Share of the module's topic words that appear in the video title (0..1).
+function topicOverlap(topic: string, title: string): number {
+    const want = Array.from(new Set(tokens(topic)));
+    if (want.length === 0) return 1;
+    const have = new Set(tokens(title));
+    return want.filter((t) => have.has(t)).length / want.length;
+}
+
+// Latin-script titles for English requests; rejects titles that are mostly non-Latin letters.
+function languageOk(title: string, language?: string): boolean {
+    if (language && !/english/i.test(language)) return true;
+    const letters = title.match(/\p{L}/gu) || [];
+    if (letters.length === 0) return true;
+    const latin = title.match(/\p{Script=Latin}/gu) || [];
+    return latin.length / letters.length >= 0.7;
+}
+
+function toResult(best: RawVideoItem): VideoResult {
+    return {
+        videoId: best.videoId,
+        title: best.title,
+        timestamp: best.timestamp || "Unknown",
+        channel: best.author?.name || "Unknown Channel",
+        views: best.views || 0,
+        url: best.url,
+        thumbnail: best.thumbnail || best.image || "",
+    };
+}
+
+/**
+ * Ranked, filtered candidates: no ids in `exclude`, on-topic, right language, playable.
+ * `topic` is the module title plus query; used for the relevance check.
+ */
+export async function searchCandidates(
+    query: string,
+    topic: string,
+    durationPref: "short" | "medium" | "long",
+    level: string,
+    exclude: Set<string> = new Set(),
+    language?: string,
+    limit = 15
+): Promise<VideoResult[]> {
+    const raw = await fetchRaw(augment(query, level), limit);
+    let pool = rankVideos(raw, durationPref).filter((v) => !exclude.has(v.videoId) && languageOk(v.title, language));
+    // Prefer on-topic. Keep a relaxed pass so a module never ends up empty if everything is weak.
+    const onTopic = pool.filter((v) => topicOverlap(topic, v.title) >= 0.34);
+    if (onTopic.length > 0) pool = onTopic;
+    const out: VideoResult[] = [];
+    for (const v of pool) {
+        if (await isPlayable(v.videoId)) out.push(toResult(v));
+        if (out.length >= 5) break;
+    }
+    return out;
+}
+
 export async function searchVideoForModule(
     query: string,
     durationPref: "short" | "medium" | "long",
     typePref: "concept" | "tutorial" | "lecture",
-    level: string
+    level: string,
+    exclude: Set<string> = new Set(),
+    language?: string,
+    topic?: string
 ): Promise<VideoResult | null> {
-
-    // Augment query
-    let augmentedQuery = query;
-    if (level === "Undergrad" || level === "Post-Grad") {
-        augmentedQuery += " lecture OR tutorial -shorts";
-    } else {
-        augmentedQuery += " explained simply -shorts";
-    }
-
-    let videos: RawVideoItem[] = [];
-
-    // STEP 1: Try yt-search Scraper (Primary)
-    try {
-        console.log(`Searching (Primary - Scraper): ${augmentedQuery}`);
-        const { default: yts } = await import("yt-search");
-        const r = await yts(augmentedQuery);
-        if (r && r.videos && r.videos.length > 0) {
-            videos = r.videos.slice(0, 10) as unknown as RawVideoItem[];
-            console.log(`Scraper success! Found ${videos.length} videos.`);
-        }
-    } catch (error) {
-        console.warn("Primary scraper search failed (likely blocked or module missing).", error);
-    }
-
-    // STEP 2: Official API Fallback (Rotation) if scraper fails or finds nothing
-    if (videos.length === 0) {
-        console.warn("Attempting YouTube API fallback...");
-        videos = await searchYouTubeAPIWithRotation(augmentedQuery);
-    }
-
-    // Filter and Rank
-    const ranked = rankVideos(videos, durationPref);
-
-    if (ranked.length > 0) {
-        const best = ranked[0];
-        return {
-            videoId: best.videoId,
-            title: best.title,
-            timestamp: best.timestamp || "Unknown",
-            channel: best.author?.name || "Unknown Channel",
-            views: best.views || 0,
-            url: best.url,
-            thumbnail: best.thumbnail || best.image || "",
-        };
-    }
-
-    return null;
+    const c = await searchCandidates(query, topic || query, durationPref, level, exclude, language);
+    return c[0] || null;
 }
 
 export async function searchVideoReplacement(
     query: string,
     durationPref: "short" | "medium" | "long",
     level: string,
-    excludeVideoId: string
+    excludeVideoId: string,
+    exclude: string[] = [],
+    language?: string
 ): Promise<VideoResult | null> {
-
-    let augmentedQuery = query;
-    if (level === "Undergrad" || level === "Post-Grad") {
-        augmentedQuery += " lecture OR tutorial -shorts";
-    } else {
-        augmentedQuery += " explained simply -shorts";
-    }
-
-    let videos: RawVideoItem[] = [];
-
-    // STEP 1: Try yt-search Scraper (Primary)
-    try {
-        const { default: yts } = await import("yt-search");
-        const r = await yts(augmentedQuery);
-        if (r && r.videos && r.videos.length > 0) {
-            videos = r.videos.slice(0, 15) as unknown as RawVideoItem[];
-        }
-    } catch (error) {
-        console.warn("Primary scraper replacement search failed.", error);
-    }
-
-    // STEP 2: Official API Fallback (Rotation)
-    if (videos.length === 0) {
-        videos = await searchYouTubeAPIWithRotation(augmentedQuery);
-    }
-
-    // Filter & Rank (Excluding current video)
-    const ranked = rankVideos(videos, durationPref).filter(v => v.videoId !== excludeVideoId);
-
-    if (ranked.length > 0) {
-        const best = ranked[0];
-        return {
-            videoId: best.videoId,
-            title: best.title,
-            timestamp: best.timestamp || "Unknown",
-            channel: best.author?.name || "Unknown Channel",
-            views: best.views || 0,
-            url: best.url,
-            thumbnail: best.thumbnail || best.image || "",
-        };
-    }
-    return null;
+    const ex = new Set([excludeVideoId, ...exclude]);
+    const c = await searchCandidates(query, query, durationPref, level, ex, language, 20);
+    return c[0] || null;
 }
 
 // ---------------------------------------------------------------------------
