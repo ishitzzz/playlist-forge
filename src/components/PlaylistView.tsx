@@ -148,7 +148,7 @@ export const PlaylistView = ({ entries, playlistUrl, onBack }: PlaylistViewProps
                         </AnimatePresence>
 
                         {/* Actions */}
-                        <div className={clsx("flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity md:translate-x-0", replacingPosition === video.position && "opacity-0")}>
+                        <div className={clsx("flex items-center gap-4 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity md:translate-x-0", replacingPosition === video.position && "!opacity-0")}>
                             {video.videoId ? (
                                 <>
                                     <button
