@@ -12,7 +12,7 @@ if (KEYS.length === 0) {
 }
 
 // Models to try in order
-const MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+const MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];
 
 export interface SyllabusModule {
     title: string;
@@ -32,8 +32,8 @@ function getNextKey(): string {
 /**
  * Attempts to generate content with failover strategy:
  * 1. Pick a key (round-robin).
- * 2. Try Primary Model (gemini-2.5-flash).
- * 3. If fail, try Secondary Model (gemini-2.5-flash-lite) with SAME key.
+ * 2. Try Primary Model (gemini-3.5-flash).
+ * 3. If fail, try Secondary Model (gemini-3.1-flash-lite) with SAME key.
  * 4. If both fail, rotate to NEXT key and repeat.
  */
 async function generateContentWithFailover(prompt: string, inlineData: any): Promise<string> {
