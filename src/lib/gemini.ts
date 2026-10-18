@@ -50,7 +50,10 @@ async function generateContentWithFailover(prompt: string, inlineData: any): Pro
         for (const modelName of MODELS) {
             try {
                 console.log(`[Gemini] Attempting with key ...${currentKey.slice(-4)} and model ${modelName}`);
-                const model = genAI.getGenerativeModel({ model: modelName });
+                const model = genAI.getGenerativeModel({
+                    model: modelName,
+                    generationConfig: { temperature: 0.2, responseMimeType: "application/json" },
+                });
 
                 const result = await model.generateContent([
                     prompt,
@@ -70,6 +73,47 @@ async function generateContentWithFailover(prompt: string, inlineData: any): Pro
     }
 
     throw new Error("All Gemini failover attempts exhausted.");
+}
+
+const MIN_MODULES = 6;
+const MAX_MODULES = 16;
+
+function normTitle(t: string): string {
+    return t.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+// Checks the model output before it reaches video search: drops junk, merges duplicates,
+// forces valid enums, and makes sure each query names the topic and the subject.
+export function cleanModules(raw: any, level: string): SyllabusModule[] {
+    const arr: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.modules) ? raw.modules : [];
+    const seen = new Set<string>();
+    const out: SyllabusModule[] = [];
+    for (const m of arr) {
+        if (!m || typeof m !== "object") continue;
+        const title = String(m.title ?? "").replace(/\s+/g, " ").trim();
+        let query = String(m.query ?? "").replace(/\s+/g, " ").trim();
+        const subject = String(m.subject ?? "").replace(/\s+/g, " ").trim();
+        if (title.length < 3 || title.length > 120) continue;
+        // not a real topic: administrative lines, marks, books, etc.
+        if (/^(unit|module|chapter)?\s*[0-9ivx]*\s*$/i.test(title)) continue;
+        if (/\b(reference books?|text ?books?|marks|credits?|syllabus|examination|prerequisites?|course outcomes?|lab(oratory)? list)\b/i.test(title)) continue;
+        const key = normTitle(title);
+        if (!key || seen.has(key)) continue;
+        // near-duplicate: one title contains the other
+        if (Array.from(seen).some((k) => k.includes(key) || key.includes(k))) continue;
+        seen.add(key);
+        if (query.length < 8) query = title;
+        // Search query must carry the topic words and the subject, so it cannot drift to another subject.
+        const qn = normTitle(query);
+        if (!normTitle(title).split(" ").filter((w) => w.length > 3).some((w) => qn.includes(w))) query = `${title} ${query}`;
+        if (subject && !qn.includes(normTitle(subject).split(" ")[0] || "\u0000")) query = `${query} ${subject}`;
+        query = query.slice(0, 140);
+        const duration = ["short", "medium", "long"].includes(m.duration) ? m.duration : "medium";
+        const type = ["concept", "tutorial", "lecture"].includes(m.type) ? m.type : level === "High School" ? "concept" : "lecture";
+        out.push({ title, query, duration, type });
+        if (out.length >= MAX_MODULES) break;
+    }
+    return out;
 }
 
 export async function generateCurriculum(
@@ -97,6 +141,7 @@ export async function generateCurriculum(
     [
       {
         "title": "Module Title",
+        "subject": "Course/subject name from the syllabus, e.g. Operating Systems",
         "query": "Specific YouTube Search Query",
         "duration": "short" | "medium" | "long",
         "type": "concept" | "tutorial" | "lecture"
@@ -104,24 +149,29 @@ export async function generateCurriculum(
     ]
 
     **Rules:**
-    - Break down big topics into digestible modules.
+    - Use ONLY topics actually present in the syllabus. Never invent topics or add generic filler. Ignore marks, credits, reference books, exam rules and lab lists.
+    - Granularity: one module per major topic. Group closely related sub-topics into one module instead of splitting each into its own. Aim for about ${MIN_MODULES + 2} to ${MAX_MODULES - 2} modules for a typical 5-unit course; never more than ${MAX_MODULES}. Use the same granularity every time for the same syllabus.
+    - Keep modules in the order the syllabus teaches them. Each module title must be unique and specific, no vague titles like "Introduction" alone and no duplicates or near-duplicates.
     - If "Post-Grad", use terms like "Advanced", "Deep Dive", "Analysis".
     - If "High School", use terms like "Introduction", "Basics", "Explained Simply".
-    - For "query", create the PERFECT search string to find the best video. Include the specific topic + context.
+    - For "query", write what a student would type on YouTube: the specific topic plus the subject name, 4 to 10 words, no hashtags, no quotes, no channel names. Example: "Banker's algorithm deadlock avoidance operating systems".
   `;
 
-    // Use the failover function
     const text = await generateContentWithFailover(prompt, {
         data: fileBase64,
         mimeType: mimeType,
     });
 
+    let parsed: any;
     try {
-        // Clean potential markdown code blocks
         const cleanedText = text.replace(/```json/g, "").replace(/```/g, "").trim();
-        return JSON.parse(cleanedText);
+        parsed = JSON.parse(cleanedText);
     } catch (e) {
         console.error("Failed to parse Gemini response:", text);
         throw new Error("Failed to generate curriculum JSON");
     }
+
+    const modules = cleanModules(parsed, level);
+    if (modules.length === 0) throw new Error("Gemini returned no usable modules");
+    return modules;
 }
