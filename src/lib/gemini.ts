@@ -78,13 +78,25 @@ async function generateContentWithFailover(prompt: string, inlineData: any): Pro
 const MIN_MODULES = 6;
 const MAX_MODULES = 16;
 
+// Mode decides how many modules and how long each video should be.
+// scratch = full coverage from the basics (most, medium), revision = fast (short), oneshot = fewest, longest.
+export const MODE_PROFILE: Record<string, { min: number; max: number; duration: "short" | "medium" | "long"; hint: string }> = {
+    scratch: { min: 12, max: 16, duration: "medium", hint: "complete lecture from the basics" },
+    revision: { min: 6, max: 9, duration: "short", hint: "quick revision crash course" },
+    oneshot: { min: 3, max: 5, duration: "long", hint: "full one shot complete lecture" },
+};
+function profileFor(mode: string) {
+    return MODE_PROFILE[mode] || MODE_PROFILE.scratch;
+}
+
 function normTitle(t: string): string {
     return t.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 // Checks the model output before it reaches video search: drops junk, merges duplicates,
 // forces valid enums, and makes sure each query names the topic and the subject.
-export function cleanModules(raw: any, level: string): SyllabusModule[] {
+export function cleanModules(raw: any, level: string, mode = "scratch"): SyllabusModule[] {
+    const prof = profileFor(mode);
     const arr: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.modules) ? raw.modules : [];
     const seen = new Set<string>();
     const out: SyllabusModule[] = [];
@@ -108,10 +120,10 @@ export function cleanModules(raw: any, level: string): SyllabusModule[] {
         if (!normTitle(title).split(" ").filter((w) => w.length > 3).some((w) => qn.includes(w))) query = `${title} ${query}`;
         if (subject && !qn.includes(normTitle(subject).split(" ")[0] || "\u0000")) query = `${query} ${subject}`;
         query = query.slice(0, 140);
-        const duration = ["short", "medium", "long"].includes(m.duration) ? m.duration : "medium";
+        const duration = prof.duration; // the mode, not the model, decides video length
         const type = ["concept", "tutorial", "lecture"].includes(m.type) ? m.type : level === "High School" ? "concept" : "lecture";
         out.push({ title, query, duration, type });
-        if (out.length >= MAX_MODULES) break;
+        if (out.length >= prof.max + 2) break;
     }
     return out;
 }
@@ -150,7 +162,7 @@ export async function generateCurriculum(
 
     **Rules:**
     - Use ONLY topics actually present in the syllabus. Never invent topics or add generic filler. Ignore marks, credits, reference books, exam rules and lab lists.
-    - Granularity: one module per major topic. Group closely related sub-topics into one module instead of splitting each into its own. Aim for about ${MIN_MODULES + 2} to ${MAX_MODULES - 2} modules for a typical 5-unit course; never more than ${MAX_MODULES}. Use the same granularity every time for the same syllabus.
+    - Number of modules is set by the learning mode. For this request (mode "${mode}") produce ${profileFor(mode).min} to ${profileFor(mode).max} modules, however many topics the syllabus has: "scratch" covers every topic one by one from the basics, "revision" groups topics into fewer quick revision modules, "oneshot" groups whole units into a handful of big modules. Group related sub-topics together to hit the range. Use the same granularity every time for the same syllabus.
     - Keep modules in the order the syllabus teaches them. Each module title must be unique and specific, no vague titles like "Introduction" alone and no duplicates or near-duplicates.
     - If "Post-Grad", use terms like "Advanced", "Deep Dive", "Analysis".
     - If "High School", use terms like "Introduction", "Basics", "Explained Simply".
@@ -171,7 +183,7 @@ export async function generateCurriculum(
         throw new Error("Failed to generate curriculum JSON");
     }
 
-    const modules = cleanModules(parsed, level);
+    const modules = cleanModules(parsed, level, mode);
     if (modules.length === 0) throw new Error("Gemini returned no usable modules");
     return modules;
 }

@@ -187,15 +187,45 @@ function topicOverlap(topic: string, title: string): number {
     return want.filter((t) => have.has(t)).length / want.length;
 }
 
-// Latin-script titles for English requests; rejects titles that are mostly non-Latin letters.
-function languageOk(title: string, language?: string): boolean {
-    if (language && !/english/i.test(language)) return true;
-    // Latin-script titles that name another language ("Bangla Tutorial", "in Hindi")
-    if (/\b(bangla|bengali|hindi|tamil|telugu|marathi|gujarati|punjabi|urdu|sinhala|nepali|malayalam|kannada|odia|arabic|spanish|french|german|russian|portuguese|indonesian|turkish)\b/i.test(title)) return false;
-    const letters = title.match(/\p{L}/gu) || [];
-    if (letters.length === 0) return true;
-    const latin = title.match(/\p{Script=Latin}/gu) || [];
-    return latin.length / letters.length >= 0.7;
+const LANG_WORDS: Record<string, RegExp> = {
+    hindi: /hindi|हिंदी|हिन्दी|hinglish/i,
+    bangla: /bangla|bengali/i, tamil: /tamil/i, telugu: /telugu/i, marathi: /marathi/i, gujarati: /gujarati/i,
+    punjabi: /punjabi/i, urdu: /urdu/i, sinhala: /sinhala/i, nepali: /nepali/i, malayalam: /malayalam/i, kannada: /kannada/i,
+    odia: /odia/i, arabic: /arabic/i, spanish: /spanish|español/i, french: /french|français/i, german: /german|deutsch/i,
+    russian: /russian/i, portuguese: /portugu/i, indonesian: /indonesia/i, turkish: /turk/i,
+};
+
+function wantedKeys(language?: string): string[] {
+    const l = (language || "english").toLowerCase();
+    if (l.includes("hinglish") || l.includes("hindi")) return ["hindi"];
+    if (l.includes("english")) return [];
+    return Object.keys(LANG_WORDS).filter((k) => l.includes(k));
+}
+
+// Rejects titles that name a language other than the requested one, and for English
+// also rejects mostly non-Latin titles.
+function languageOk(title: string, channel: string, language?: string): boolean {
+    const want = wantedKeys(language);
+    const text = `${title} ${channel}`;
+    for (const [k, re] of Object.entries(LANG_WORDS)) {
+        if (!want.includes(k) && re.test(text)) return false;
+    }
+    if (want.length === 0) {
+        const letters = title.match(/\p{L}/gu) || [];
+        if (letters.length === 0) return true;
+        const latin = title.match(/\p{Script=Latin}/gu) || [];
+        return latin.length / letters.length >= 0.7;
+    }
+    return true;
+}
+
+// For a non-English request, a title or channel that says the language (or is in Devanagari for Hindi) ranks first.
+function languageMatches(title: string, channel: string, language?: string): boolean {
+    const want = wantedKeys(language);
+    if (want.length === 0) return true;
+    const text = `${title} ${channel}`;
+    if (want.includes("hindi") && /[\u0900-\u097F]/.test(text)) return true;
+    return want.some((k) => LANG_WORDS[k].test(text));
 }
 
 function toResult(best: RawVideoItem): VideoResult {
@@ -223,11 +253,20 @@ export async function searchCandidates(
     language?: string,
     limit = 15
 ): Promise<VideoResult[]> {
-    const raw = await fetchRaw(augment(query, level), limit);
-    let pool = rankVideos(raw, durationPref).filter((v) => !exclude.has(v.videoId) && languageOk(v.title, language));
+    const want = wantedKeys(language);
+    let q = query;
+    if (want.length && !new RegExp(want.join("|"), "i").test(q)) q += " " + want[0];
+    const raw = await fetchRaw(augment(q, level), limit);
+    let pool = rankVideos(raw, durationPref).filter((v) => !exclude.has(v.videoId) && languageOk(v.title, v.author?.name || "", language));
     // Prefer on-topic. Keep a relaxed pass so a module never ends up empty if everything is weak.
     const onTopic = pool.filter((v) => topicOverlap(topic, v.title) >= 0.34);
     if (onTopic.length > 0) pool = onTopic;
+    // Never pick a video wildly past the target length (e.g. a 7 hour video for a short revision module).
+    const sane = pool.filter((v) => !v.seconds || overlongPenalty(v.seconds, durationPref) < 60);
+    if (sane.length > 0) pool = sane;
+    // Requested language first (stable sort keeps the earlier ranking inside each group).
+    const inLang = pool.filter((v) => languageMatches(v.title, v.author?.name || "", language));
+    if (inLang.length > 0) pool = [...inLang, ...pool.filter((v) => !inLang.includes(v))];
     const out: VideoResult[] = [];
     for (const v of pool) {
         if (await isPlayable(v.videoId)) out.push(toResult(v));
