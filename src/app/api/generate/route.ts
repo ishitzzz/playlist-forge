@@ -44,7 +44,12 @@ export async function POST(req: NextRequest) {
             return { ...mod, video, position: index + 1 };
         }));
 
-        return NextResponse.json({ playlist });
+        // Drop modules with no playable video and renumber, so the UI never renders an empty row.
+        const filtered = playlist
+            .filter((m) => m.video)
+            .map((m, i) => ({ ...m, position: i + 1 }));
+
+        return NextResponse.json({ playlist: filtered });
 
     } catch (error) {
         console.error("API Error:", error);
