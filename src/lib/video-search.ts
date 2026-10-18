@@ -276,8 +276,8 @@ function rankVideos(videos: RawVideoItem[], durationPref: "short" | "medium" | "
             let scoreA = 0;
             let scoreB = 0;
 
-            if (a.seconds) scoreA += getDurationScore(a.seconds, durationPref);
-            if (b.seconds) scoreB += getDurationScore(b.seconds, durationPref);
+            if (a.seconds) scoreA += getDurationScore(a.seconds, durationPref) - overlongPenalty(a.seconds, durationPref);
+            if (b.seconds) scoreB += getDurationScore(b.seconds, durationPref) - overlongPenalty(b.seconds, durationPref);
 
             if (!isAllCaps(a.title)) scoreA += 5;
             if (!isAllCaps(b.title)) scoreB += 5;
@@ -288,6 +288,15 @@ function rankVideos(videos: RawVideoItem[], durationPref: "short" | "medium" | "
 
             return scoreB - scoreA;
         });
+}
+
+// A 24 hour course is a miss for an intro module. Penalise videos far past the target range.
+// Targets: short <= 10 min, medium <= 30 min, long <= 90 min. Penalty starts at 3x the target.
+function overlongPenalty(seconds: number, pref: "short" | "medium" | "long"): number {
+    const limit = pref === "short" ? 10 : pref === "medium" ? 30 : 90;
+    const min = seconds / 60;
+    if (min <= limit * 3) return 0;
+    return min > limit * 8 ? 60 : 30; // outweighs the +10 duration and +10 channel boosts
 }
 
 function getDurationScore(seconds: number, pref: "short" | "medium" | "long"): number {
