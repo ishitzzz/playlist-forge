@@ -190,6 +190,8 @@ function topicOverlap(topic: string, title: string): number {
 // Latin-script titles for English requests; rejects titles that are mostly non-Latin letters.
 function languageOk(title: string, language?: string): boolean {
     if (language && !/english/i.test(language)) return true;
+    // Latin-script titles that name another language ("Bangla Tutorial", "in Hindi")
+    if (/\b(bangla|bengali|hindi|tamil|telugu|marathi|gujarati|punjabi|urdu|sinhala|nepali|malayalam|kannada|odia|arabic|spanish|french|german|russian|portuguese|indonesian|turkish)\b/i.test(title)) return false;
     const letters = title.match(/\p{L}/gu) || [];
     if (letters.length === 0) return true;
     const latin = title.match(/\p{Script=Latin}/gu) || [];
