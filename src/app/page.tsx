@@ -10,6 +10,44 @@ import { PlaylistView } from "@/components/PlaylistView";
 
 type Phase = "hero" | "onboarding" | "upload" | "loading" | "playlist";
 
+// Vercel rejects request bodies over 4.5 MB (413), and a normal phone photo is
+// bigger than that, so compress in the browser before upload (per Vercel's own
+// FUNCTION_PAYLOAD_TOO_LARGE guidance). Sizing follows the Gemini docs: images
+// are tiled into 768x768 tiles at 258 tokens each, and higher resolution helps
+// read fine text - so 2048px on the long side keeps a full syllabus page legible
+// (about 4-8 tiles, i.e. ~1-2k tokens) while JPEG stays far under both limits
+// (Vercel 4.5MB, Gemini inline 20MB). Falls back to the original file if
+// decoding fails, so behavior is never worse than before.
+async function compressImage(file: File): Promise<File> {
+    if (!file.type.startsWith("image/")) return file;
+    try {
+        const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+        const MAX_DIM = 2048;
+        const MAX_BYTES = 2 * 1024 * 1024;
+        const scale = Math.min(1, MAX_DIM / Math.max(bitmap.width, bitmap.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return file;
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close();
+
+        for (const quality of [0.85, 0.7, 0.55, 0.4]) {
+            const blob = await new Promise<Blob | null>((resolve) =>
+                canvas.toBlob(resolve, "image/jpeg", quality)
+            );
+            if (blob && blob.size <= MAX_BYTES) {
+                const name = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+                return new File([blob], name, { type: "image/jpeg" });
+            }
+        }
+        return file; // still too large even at lowest quality; let the server say so
+    } catch {
+        return file;
+    }
+}
+
 export default function Home() {
     const [phase, setPhase] = useState<Phase>("hero");
     const [persona, setPersona] = useState<{ level: string; language: string } | null>(null);
@@ -29,8 +67,9 @@ export default function Home() {
         setPhase("loading");
 
         try {
+            const uploadFile = await compressImage(file);
             const formData = new FormData();
-            formData.append("file", file);
+            formData.append("file", uploadFile);
             formData.append("mode", mode);
             formData.append("level", persona?.level || "Undergrad");
             formData.append("language", persona?.language || "English");
@@ -40,6 +79,9 @@ export default function Home() {
                 body: formData,
             });
 
+            if (response.status === 413) {
+                throw new Error("IMAGE_TOO_LARGE");
+            }
             if (!response.ok) {
                 throw new Error("Generation failed");
             }
@@ -63,7 +105,11 @@ export default function Home() {
 
         } catch (error) {
             console.error("Upload error:", error);
-            alert("Failed to generate playlist. Please check your API key and try again.");
+            if (error instanceof Error && error.message === "IMAGE_TOO_LARGE") {
+                alert("That image is too large even after compression. Try a screenshot of the syllabus instead of a full photo.");
+            } else {
+                alert("Failed to generate the playlist. Please try again in a moment.");
+            }
             setPhase("upload"); // Go back to upload state
         }
     };

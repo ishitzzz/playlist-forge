@@ -49,6 +49,15 @@ export async function POST(req: NextRequest) {
             .filter((m) => m.video)
             .map((m, i) => ({ ...m, position: i + 1 }));
 
+        if (filtered.length === 0) {
+            // Gemini produced modules but every video search failed (or found nothing).
+            // Returning an empty playlist renders a blank UI, so fail loudly instead.
+            return NextResponse.json(
+                { error: "Video search is temporarily unavailable. Please try again." },
+                { status: 502 }
+            );
+        }
+
         return NextResponse.json({ playlist: filtered });
 
     } catch (error) {
