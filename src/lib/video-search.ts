@@ -1,6 +1,8 @@
 // Prioritize official API to avoid IP blocking/scraping issues on Vercel
 // Fallback to yt-search only if all API keys fail.
 
+import { KeyPool, youtubeDailyResetMs, FailureKind } from "./key-pool";
+
 export interface VideoResult {
     videoId: string;
     title: string;
@@ -26,30 +28,43 @@ interface RawVideoItem {
 }
 
 // ---------------------------------------------------------------------------
-// 1. API Key Rotation Logic
+// 1. API Key Routing (shared pool: dynamic count, round-robin, cooldowns)
 // ---------------------------------------------------------------------------
 
-function getApiKeys(): string[] {
-    const keys = [
-        process.env.YOUTUBE_API_KEY,
-        process.env.YOUTUBE_API_KEY_2,
-        process.env.YOUTUBE_API_KEY_3
-    ].filter((k): k is string => !!k && k.length > 0); // Filter out undefined/empty
-    return keys;
+// Dynamic key pool: YOUTUBE_API_KEY plus YOUTUBE_API_KEY_2 .. YOUTUBE_API_KEY_N (any count).
+// Round-robin across healthy keys; a failing key cools down and is skipped, so a
+// dead key adds zero delay to later requests. See key-pool.ts for the design.
+const youtubePool = new KeyPool("YOUTUBE_API_KEY", youtubeDailyResetMs);
+
+function classifyYouTubeError(status: number, body: string): FailureKind {
+    const msg = body.toLowerCase();
+    if (status === 403) {
+        if (msg.includes("quota")) return "quota_daily"; // daily quota, resets midnight Pacific
+        return "auth"; // key invalid / suspended / API not enabled: dead key, don't retry today
+    }
+    if (status === 429) return "rate_limit";
+    return "transient";
 }
 
 async function searchYouTubeAPIWithRotation(query: string): Promise<RawVideoItem[]> {
-    const keys = getApiKeys();
-
-    if (keys.length === 0) {
+    if (youtubePool.size === 0) {
         console.warn("No YOUTUBE_API_KEYs found in environment variables.");
         return [];
     }
 
-    for (let i = 0; i < keys.length; i++) {
-        const apiKey = keys[i];
+    // One attempt per healthy key; each retry uses a DIFFERENT key (no serial
+    // retries through a dead one). Cooled-down keys are skipped entirely.
+    for (let attempt = 0; attempt < youtubePool.size; attempt++) {
+        let acquired: { key: string; label: string };
+        try {
+            acquired = youtubePool.acquire();
+        } catch (e) {
+            console.warn((e as Error).message);
+            break; // every key is cooling down
+        }
+        const { key: apiKey, label } = acquired;
         const maskedKey = apiKey.substring(0, 4) + "...";
-        console.log(`Trying API Key #${i + 1} (${maskedKey}) for query: "${query.substring(0, 20)}..."`);
+        const started = Date.now();
 
         try {
             const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encodeURIComponent(query)}&type=video&key=${apiKey}`;
@@ -58,35 +73,32 @@ async function searchYouTubeAPIWithRotation(query: string): Promise<RawVideoItem
             if (response.ok) {
                 const data = await response.json();
                 if (!data.items) {
-                    console.warn(`Key #${i + 1} worked but returned no items.`);
+                    console.warn(`${label} worked but returned no items.`);
+                    youtubePool.reportSuccess(label, Date.now() - started);
                     return [];
                 }
-                console.log(`Key #${i + 1} success! Found ${data.items.length} videos.`);
+                console.log(`${label} (${maskedKey}) success! Found ${data.items.length} videos.`);
+                youtubePool.reportSuccess(label, Date.now() - started);
                 return await enrichWithDurations(mapApiToRaw(data.items), apiKey);
             }
 
-            // Handle Errors
             const errorText = await response.text();
-            console.error(`Key #${i + 1} failed: ${response.status} ${response.statusText}`, errorText);
+            console.error(`${label} failed: ${response.status} ${response.statusText}`, errorText);
 
-            // If 403 (Quota/Forbidden), continue to next key. 
-            // If 400 (Bad Request), it's the query, don't rotate.
-            if (response.status === 403) {
-                console.warn(`Key #${i + 1} quota exceeded or blocked. Rotating to next key...`);
-                continue;
-            } else {
-                // Non-retryable error (e.g. 400 bad request)
+            if (response.status === 400) {
+                // Bad request: it's the query, not the key. Don't rotate.
                 break;
             }
-
+            youtubePool.reportFailure(label, classifyYouTubeError(response.status, errorText));
+            continue;
         } catch (e) {
-            console.error(`Key #${i + 1} network error:`, e);
-            // Network glitch? Try next key just in case
+            console.error(`${label} network error:`, e);
+            youtubePool.reportFailure(label, "transient");
             continue;
         }
     }
 
-    console.warn("All API keys failed or exhausted.");
+    console.warn("All YouTube API keys failed or are cooling down.");
     return [];
 }
 
@@ -149,17 +161,18 @@ function augment(query: string, level: string): string {
 }
 
 async function fetchRaw(augmentedQuery: string, limit: number): Promise<RawVideoItem[]> {
-    let videos: RawVideoItem[] = [];
-    // Primary: yt-search scraper
-    try {
-        const { default: yts } = await import("yt-search");
-        const r = await yts(augmentedQuery);
-        if (r && r.videos && r.videos.length > 0) videos = r.videos.slice(0, limit) as unknown as RawVideoItem[];
-    } catch (error) {
-        console.warn("Primary scraper search failed (likely blocked or module missing).", error);
+    // Primary: official API with key rotation (scraping from Vercel IPs gets blocked).
+    let videos: RawVideoItem[] = await searchYouTubeAPIWithRotation(augmentedQuery);
+    // Fallback: yt-search scraper
+    if (videos.length === 0) {
+        try {
+            const { default: yts } = await import("yt-search");
+            const r = await yts(augmentedQuery);
+            if (r && r.videos && r.videos.length > 0) videos = r.videos.slice(0, limit) as unknown as RawVideoItem[];
+        } catch (error) {
+            console.warn("Fallback scraper search failed (likely blocked or module missing).", error);
+        }
     }
-    // Fallback: official API with key rotation
-    if (videos.length === 0) videos = await searchYouTubeAPIWithRotation(augmentedQuery);
     return videos;
 }
 
