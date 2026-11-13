@@ -158,7 +158,9 @@ export function youtubeDailyResetMs(): number {
     return msUntilPacificMidnight();
 }
 
-/** Gemini free-tier daily limits reset 24h after exhaustion; no fixed wall-clock reset is published. */
+/** Gemini free-tier RPD (requests-per-day) quotas reset at midnight Pacific, per
+ *  https://ai.google.dev/gemini-api/docs/rate-limits ("Requests per day (RPD)
+ *  quotas reset at midnight Pacific time"). Verified live 2026-11-13. */
 export function geminiDailyResetMs(): number {
-    return 24 * HOUR;
+    return msUntilPacificMidnight();
 }
